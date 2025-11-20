@@ -117,6 +117,7 @@ spec:
             - name: RABBITMQ_DEFAULT_VHOST
               value: airflow
 ---
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -144,6 +145,9 @@ spec:
               value: CeleryExecutor
             - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
               value: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+          volumeMounts:  # ⬅️ AJOUTER
+            - name: dags-volume
+              mountPath: /opt/airflow/dags
       containers:
         - name: web
           image: apache/airflow:2.8.1
@@ -155,12 +159,19 @@ spec:
               value: CeleryExecutor
             - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
               value: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+          volumeMounts:  # ⬅️ AJOUTER
+            - name: dags-volume
+              mountPath: /opt/airflow/dags
           livenessProbe:
             httpGet:
               path: /
               port: 8080
             initialDelaySeconds: 60
             periodSeconds: 30
+      volumes:  # ⬅️ AJOUTER
+        - name: dags-volume
+          configMap:
+            name: airflow-dags
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -187,6 +198,13 @@ spec:
               value: CeleryExecutor
             - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
               value: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+          volumeMounts:  # ⬅️ AJOUTER
+            - name: dags-volume
+              mountPath: /opt/airflow/dags
+      volumes:  # ⬅️ AJOUTER
+        - name: dags-volume
+          configMap:
+            name: airflow-dags
 ---
 apiVersion: apps/v1
 kind: Deployment
