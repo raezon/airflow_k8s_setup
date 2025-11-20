@@ -8,10 +8,8 @@ spec:
     app: airflow
     tier: db
   ports:
-    - name: postgres
-      protocol: TCP
-      port: 5432
-      targetPort: postgres
+    - port: 5432
+      targetPort: 5432
 ---
 apiVersion: v1
 kind: Service
@@ -23,14 +21,14 @@ spec:
     app: airflow
     tier: rabbitmq
   ports:
-    - name: node
+    - name: amqp
       protocol: TCP
       port: 5672
-      targetPort: node
+      targetPort: 5672
     - name: management
       protocol: TCP
       port: 15672
-      targetPort: management
+      targetPort: 15672
 ---
 apiVersion: v1
 kind: Service
@@ -42,10 +40,8 @@ spec:
     app: airflow
     tier: web
   ports:
-    - name: web
-      protocol: TCP
-      port: 8080
-      targetPort: web
+    - port: 8080
+      targetPort: 8080
       nodePort: 32080
 ---
 apiVersion: v1
@@ -58,18 +54,20 @@ spec:
     app: airflow
     tier: flower
   ports:
-    - name: flower
-      protocol: TCP
-      port: 5555
-      targetPort: flower
+    - port: 5555
+      targetPort: 5555
       nodePort: 32081
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: postgres
 spec:
   replicas: 1
+  selector:
+    matchLabels:
+      app: airflow
+      tier: db
   template:
     metadata:
       labels:
@@ -77,147 +75,169 @@ spec:
         tier: db
     spec:
       containers:
-      - name: postgres
-        image: postgres
-        ports:
         - name: postgres
-          containerPort: 5432
-        env:
-         - name: POSTGRES_USER
-           value: "airflow"
-         - name: POSTGRES_PASSWORD
-           value: "airflow"
-         - name: POSTGRES_DB
-           value: "airflow"
+          image: postgres:15
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: airflow
+            - name: POSTGRES_PASSWORD
+              value: airflow
+            - name: POSTGRES_DB
+              value: airflow
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: rabbitmq
 spec:
   replicas: 1
+  selector:
+    matchLabels:
+      app: airflow
+      tier: rabbitmq
   template:
     metadata:
       labels:
         app: airflow
         tier: rabbitmq
     spec:
-      restartPolicy: Always
       containers:
-      - name: rabbitmq
-        image: rabbitmq:3-management
-        ports:
-        - name: management
-          containerPort: 15672
-        - name: node
-          containerPort: 5672
-        env:
-        - name: RABBITMQ_DEFAULT_USER
-          value: airflow
-        - name: RABBITMQ_DEFAULT_PASS
-          value: airflow
-        - name: RABBITMQ_DEFAULT_VHOST
-          value: airflow
+        - name: rabbitmq
+          image: rabbitmq:3-management
+          ports:
+            - containerPort: 5672
+            - containerPort: 15672
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              value: airflow
+            - name: RABBITMQ_DEFAULT_PASS
+              value: airflow
+            - name: RABBITMQ_DEFAULT_VHOST
+              value: airflow
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: web
 spec:
   replicas: 1
+  selector:
+    matchLabels:
+      app: airflow
+      tier: web
   template:
     metadata:
       labels:
         app: airflow
         tier: web
     spec:
-      restartPolicy: Always
+      initContainers:
+        - name: init-airflow-db
+          image: apache/airflow:2.8.1
+          command: ["sh", "-c"]
+          args:
+            - airflow db migrate && airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password admin
+          env:
+            - name: AIRFLOW__CORE__EXECUTOR
+              value: CeleryExecutor
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              value: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
       containers:
-      - name: web
-        image: mumoshu/kube-airflow:1.8.0.0-1.6.1
-        env:
-        - name: AIRFLOW_HOME
-          value: "/usr/local/airflow"
-        ports:
         - name: web
-          containerPort: 8080
-        args: ["webserver"]
-        livenessProbe:
-          httpGet:
-            path: /
-            port: 8080
-          initialDelaySeconds: 240
-          periodSeconds: 60
+          image: apache/airflow:2.8.1
+          args: ["webserver"]
+          ports:
+            - containerPort: 8080
+          env:
+            - name: AIRFLOW__CORE__EXECUTOR
+              value: CeleryExecutor
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              value: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 30
 ---
-apiVersion: extensions/v1beta1
-kind: Deployment
-metadata:
-  name: flower
-spec:
-  replicas: 1
-  template:
-    metadata:
-      labels:
-        app: airflow
-        tier: flower
-    spec:
-      restartPolicy: Always
-      containers:
-      - name: flower
-        image: mumoshu/kube-airflow:1.8.0.0-1.6.1
-        env:
-        - name: AIRFLOW_HOME
-          value: "/usr/local/airflow"
-        # To prevent the error: ValueError: invalid literal for int() with base 10: 'tcp://10.0.0.83:5555'
-        - name: FLOWER_PORT
-          value: "5555"
-        ports:
-        - name: flower
-          containerPort: 5555
-        args: ["flower"]
----
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: scheduler
 spec:
   replicas: 1
+  selector:
+    matchLabels:
+      app: airflow
+      tier: scheduler
   template:
     metadata:
       labels:
         app: airflow
         tier: scheduler
     spec:
-      restartPolicy: Always
       containers:
-      - name: scheduler
-        image: mumoshu/kube-airflow:1.8.0.0-1.6.1
-        # volumes:
-        #     - /localpath/to/dags:/usr/local/airflow/dags
-        env:
-        - name: AIRFLOW_HOME
-          value: "/usr/local/airflow"
-        args: ["scheduler", "-n", "5"]
+        - name: scheduler
+          image: apache/airflow:2.8.1
+          args: ["scheduler"]
+          env:
+            - name: AIRFLOW__CORE__EXECUTOR
+              value: CeleryExecutor
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              value: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
 ---
-apiVersion: extensions/v1beta1
+apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: worker
 spec:
   replicas: 1
+  selector:
+    matchLabels:
+      app: airflow
+      tier: worker
   template:
     metadata:
       labels:
         app: airflow
         tier: worker
     spec:
-      restartPolicy: Always
       containers:
-      - name: worker
-        image: mumoshu/kube-airflow:1.8.0.0-1.6.1
-        # volumes:
-        #     - /localpath/to/dags:/usr/local/airflow/dags
-        env:
-        - name: AIRFLOW_HOME
-          value: "/usr/local/airflow"
-        args: ["worker"]
+        - name: worker
+          image: apache/airflow:2.8.1
+          args: ["celery", "worker"]
+          env:
+            - name: AIRFLOW__CORE__EXECUTOR
+              value: CeleryExecutor
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              value: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flower
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow
+      tier: flower
+  template:
+    metadata:
+      labels:
+        app: airflow
+        tier: flower
+    spec:
+      containers:
+        - name: flower
+          image: apache/airflow:2.8.1
+          command: ["airflow", "celery", "flower"]
+          env:
+            - name: AIRFLOW__CELERY__BROKER_URL
+              value: amqp://airflow:airflow@rabbitmq:5672/airflow
+            - name: AIRFLOW__CORE__EXECUTOR
+              value: CeleryExecutor
+          ports:
+            - containerPort: 5555
