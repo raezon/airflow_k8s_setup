@@ -5,7 +5,7 @@ metadata:
 spec:
   type: ClusterIP
   selector:
-    app: airflow
+    app: postgres  # ⬅️ CORRIGÉ pour matcher le deployment
     tier: db
   ports:
     - port: 5432
@@ -18,7 +18,7 @@ metadata:
 spec:
   type: ClusterIP
   selector:
-    app: airflow
+    app: rabbitmq  # ⬅️ CORRIGÉ pour matcher le deployment
     tier: rabbitmq
   ports:
     - name: amqp
@@ -37,7 +37,7 @@ metadata:
 spec:
   type: NodePort
   selector:
-    app: airflow
+    app: web  # ⬅️ CORRIGÉ pour matcher le deployment
     tier: web
   ports:
     - port: 8080
@@ -51,7 +51,7 @@ metadata:
 spec:
   type: NodePort
   selector:
-    app: airflow
+    app: flower  # ⬅️ CORRIGÉ pour matcher le deployment
     tier: flower
   ports:
     - port: 5555
@@ -66,12 +66,11 @@ spec:
   replicas: 1
   selector:
     matchLabels:
-      app: airflow
-      tier: db
+      app: postgres
   template:
     metadata:
       labels:
-        app: airflow
+        app: postgres
         tier: db
     spec:
       containers:
@@ -86,6 +85,14 @@ spec:
               value: airflow
             - name: POSTGRES_DB
               value: airflow
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - airflow
+            initialDelaySeconds: 30
+            periodSeconds: 10
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -95,12 +102,11 @@ spec:
   replicas: 1
   selector:
     matchLabels:
-      app: airflow
-      tier: rabbitmq
+      app: rabbitmq
   template:
     metadata:
       labels:
-        app: airflow
+        app: rabbitmq
         tier: rabbitmq
     spec:
       containers:
@@ -117,7 +123,6 @@ spec:
             - name: RABBITMQ_DEFAULT_VHOST
               value: airflow
 ---
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -126,12 +131,11 @@ spec:
   replicas: 1
   selector:
     matchLabels:
-      app: airflow
-      tier: web
+      app: web
   template:
     metadata:
       labels:
-        app: airflow
+        app: web
         tier: web
     spec:
       initContainers:
@@ -139,19 +143,44 @@ spec:
           image: apache/airflow:2.8.1
           command: ["sh", "-c"]
           args:
-            - airflow db migrate && airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password admin
+            - |
+              echo "⏳ Attente de PostgreSQL..."
+              until pg_isready -h postgres -p 5432 -U airflow; do
+                sleep 5
+              done
+              echo "✅ PostgreSQL est prêt!"
+              echo "🔄 Initialisation de la base Airflow..."
+              airflow db migrate
+              echo "👤 Création de l'utilisateur admin..."
+              airflow users create \
+                --username admin \
+                --firstname Admin \
+                --lastname User \
+                --role Admin \
+                --email admin@example.com \
+                --password admin
+              echo "🎉 Initialisation terminée!"
           env:
             - name: AIRFLOW__CORE__EXECUTOR
               value: CeleryExecutor
             - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
               value: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
-          volumeMounts:  # ⬅️ AJOUTER
-            - name: dags-volume
-              mountPath: /opt/airflow/dags
+            - name: AIRFLOW__CELERY__BROKER_URL
+              value: amqp://airflow:airflow@rabbitmq:5672/airflow
+            - name: PGUSER
+              value: airflow
+            - name: PGPASSWORD
+              value: airflow
+            - name: PGHOST
+              value: postgres
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: airflow
       containers:
         - name: web
           image: apache/airflow:2.8.1
-          args: ["webserver"]
+          command: ["airflow", "webserver"]
           ports:
             - containerPort: 8080
           env:
@@ -159,19 +188,22 @@ spec:
               value: CeleryExecutor
             - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
               value: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
-          volumeMounts:  # ⬅️ AJOUTER
-            - name: dags-volume
-              mountPath: /opt/airflow/dags
+            - name: AIRFLOW__CELERY__BROKER_URL
+              value: amqp://airflow:airflow@rabbitmq:5672/airflow
+            - name: AIRFLOW__CORE__LOAD_EXAMPLES
+              value: "true"
           livenessProbe:
             httpGet:
-              path: /
+              path: /health
               port: 8080
             initialDelaySeconds: 60
             periodSeconds: 30
-      volumes:  # ⬅️ AJOUTER
-        - name: dags-volume
-          configMap:
-            name: airflow-dags
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -181,56 +213,74 @@ spec:
   replicas: 1
   selector:
     matchLabels:
-      app: airflow
-      tier: scheduler
+      app: scheduler
   template:
     metadata:
       labels:
-        app: airflow
+        app: scheduler
         tier: scheduler
     spec:
+      initContainers:
+        - name: wait-for-db
+          image: postgres:15
+          command: ["sh", "-c"]
+          args:
+            - |
+              until pg_isready -h postgres -p 5432 -U airflow; do
+                echo "⏳ En attente de PostgreSQL..."; sleep 5
+              done
+              echo "✅ PostgreSQL prêt pour le scheduler!"
+          env:
+            - name: PGUSER
+              value: airflow
+            - name: PGPASSWORD
+              value: airflow
+            - name: PGHOST
+              value: postgres
+            - name: PGPORT
+              value: "5432"
       containers:
         - name: scheduler
           image: apache/airflow:2.8.1
-          args: ["scheduler"]
+          command: ["airflow", "scheduler"]
           env:
             - name: AIRFLOW__CORE__EXECUTOR
               value: CeleryExecutor
             - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
               value: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
-          volumeMounts:  # ⬅️ AJOUTER
-            - name: dags-volume
-              mountPath: /opt/airflow/dags
-      volumes:  # ⬅️ AJOUTER
-        - name: dags-volume
-          configMap:
-            name: airflow-dags
+            - name: AIRFLOW__CELERY__BROKER_URL
+              value: amqp://airflow:airflow@rabbitmq:5672/airflow
+            - name: AIRFLOW__CORE__LOAD_EXAMPLES
+              value: "true"
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: worker
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
-      app: airflow
-      tier: worker
+      app: worker
   template:
     metadata:
       labels:
-        app: airflow
+        app: worker
         tier: worker
     spec:
       containers:
         - name: worker
           image: apache/airflow:2.8.1
-          args: ["celery", "worker"]
+          command: ["airflow", "celery", "worker"]
           env:
             - name: AIRFLOW__CORE__EXECUTOR
               value: CeleryExecutor
             - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
               value: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+            - name: AIRFLOW__CELERY__BROKER_URL
+              value: amqp://airflow:airflow@rabbitmq:5672/airflow
+            - name: AIRFLOW__CELERY__WORKER_CONCURRENCY
+              value: "4"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -240,22 +290,27 @@ spec:
   replicas: 1
   selector:
     matchLabels:
-      app: airflow
-      tier: flower
+      app: flower
   template:
     metadata:
       labels:
-        app: airflow
+        app: flower
         tier: flower
     spec:
       containers:
         - name: flower
           image: apache/airflow:2.8.1
           command: ["airflow", "celery", "flower"]
+          args:
+            - --port=5555
+            - --broker=amqp://airflow:airflow@rabbitmq:5672/airflow
+            - --basic_auth=admin:admin
           env:
             - name: AIRFLOW__CELERY__BROKER_URL
               value: amqp://airflow:airflow@rabbitmq:5672/airflow
             - name: AIRFLOW__CORE__EXECUTOR
               value: CeleryExecutor
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              value: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
           ports:
             - containerPort: 5555
