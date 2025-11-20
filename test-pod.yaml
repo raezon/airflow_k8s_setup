@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-dags-access
+spec:
+  containers:
+  - name: test
+    image: busybox
+    command: ["sleep", "3600"]
+    volumeMounts:
+    - name: test-dags
+      mountPath: /test-dags
+  volumes:
+  - name: test-dags
+    hostPath:
+      path: /run/desktop/mnt/host/c/projects/helm-airflow/kube-airflow/dags  # ⬅️ VÉRIFIEZ CE CHEMIN
+      type: DirectoryOrCreate

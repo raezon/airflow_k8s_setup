@@ -141,7 +141,7 @@ spec:
       volumes:
         - name: airflow-dags
           hostPath:
-            path: /home/airflow/dags  # ⬅️ MODIFIEZ CE CHEMIN SELON VOTRE OS
+            path: /run/desktop/mnt/host/c/projects/helm-airflow/kube-airflow/dags
             type: DirectoryOrCreate
       initContainers:
         - name: init-airflow-db
@@ -172,6 +172,8 @@ spec:
               value: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
             - name: AIRFLOW__CELERY__BROKER_URL
               value: amqp://airflow:airflow@rabbitmq:5672/airflow
+            - name: AIRFLOW__CELERY__RESULT_BACKEND
+              value: db+postgresql://airflow:airflow@postgres:5432/airflow
             - name: PGUSER
               value: airflow
             - name: PGPASSWORD
@@ -201,8 +203,10 @@ spec:
               value: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
             - name: AIRFLOW__CELERY__BROKER_URL
               value: amqp://airflow:airflow@rabbitmq:5672/airflow
+            - name: AIRFLOW__CELERY__RESULT_BACKEND
+              value: db+postgresql://airflow:airflow@postgres:5432/airflow
             - name: AIRFLOW__CORE__LOAD_EXAMPLES
-              value: "false"  # ⬅️ Désactive les exemples
+              value: "false"
           livenessProbe:
             httpGet:
               path: /health
@@ -234,7 +238,7 @@ spec:
       volumes:
         - name: airflow-dags
           hostPath:
-            path: /home/airflow/dags  # ⬅️ Même chemin
+            path: /run/desktop/mnt/host/c/projects/helm-airflow/kube-airflow/dags
             type: DirectoryOrCreate
       initContainers:
         - name: wait-for-db
@@ -272,8 +276,10 @@ spec:
               value: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
             - name: AIRFLOW__CELERY__BROKER_URL
               value: amqp://airflow:airflow@rabbitmq:5672/airflow
+            - name: AIRFLOW__CELERY__RESULT_BACKEND
+              value: db+postgresql://airflow:airflow@postgres:5432/airflow
             - name: AIRFLOW__CORE__LOAD_EXAMPLES
-              value: "false"  # ⬅️ Désactive les exemples
+              value: "false"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -293,7 +299,7 @@ spec:
       volumes:
         - name: airflow-dags
           hostPath:
-            path: /home/airflow/dags  # ⬅️ Même chemin
+            path: /run/desktop/mnt/host/c/projects/helm-airflow/kube-airflow/dags
             type: DirectoryOrCreate
       containers:
         - name: worker
@@ -309,6 +315,8 @@ spec:
               value: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
             - name: AIRFLOW__CELERY__BROKER_URL
               value: amqp://airflow:airflow@rabbitmq:5672/airflow
+            - name: AIRFLOW__CELERY__RESULT_BACKEND
+              value: db+postgresql://airflow:airflow@postgres:5432/airflow
             - name: AIRFLOW__CELERY__WORKER_CONCURRENCY
               value: "4"
 ---
@@ -327,28 +335,46 @@ spec:
         app: flower
         tier: flower
     spec:
-      volumes:
-        - name: airflow-dags
-          hostPath:
-            path: /home/airflow/dags  # ⬅️ Même chemin
-            type: DirectoryOrCreate
       containers:
         - name: flower
           image: apache/airflow:2.8.1
-          command: ["airflow", "celery", "flower"]
+          # ⬇️ SOLUTION : Utiliser une commande shell pour contourner le problème
+          command: ["sh", "-c"]
           args:
-            - --port=5555
-            - --broker=amqp://airflow:airflow@rabbitmq:5672/airflow
-            - --basic_auth=admin:admin
-          volumeMounts:
-            - name: airflow-dags
-              mountPath: /opt/airflow/dags
+            - |
+              # Nettoyer les variables d'environnement problématiques
+              unset FLOWER_PORT
+              unset FLOWER_HOST
+              # Lancer Flower avec la configuration directe
+              airflow celery flower \
+                --port=5555 \
+                --broker=amqp://airflow:airflow@rabbitmq:5672/airflow \
+                --basic-auth=admin:admin
           env:
             - name: AIRFLOW__CELERY__BROKER_URL
               value: amqp://airflow:airflow@rabbitmq:5672/airflow
+            - name: AIRFLOW__CELERY__RESULT_BACKEND
+              value: db+postgresql://airflow:airflow@postgres:5432/airflow
             - name: AIRFLOW__CORE__EXECUTOR
               value: CeleryExecutor
             - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
               value: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+            # ⬇️ ÉVITER les variables conflictuelles
+            - name: FLOWER_PORT
+              value: ""
+            - name: FLOWER_HOST
+              value: ""
           ports:
             - containerPort: 5555
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 5555
+            initialDelaySeconds: 40
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 5555
+            initialDelaySeconds: 20
+            periodSeconds: 10
